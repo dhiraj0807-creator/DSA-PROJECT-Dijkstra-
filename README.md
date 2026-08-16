@@ -65,9 +65,9 @@ It returns finalized nodes, successful edge relaxations, the shortest path, and 
 1. Click the map once to set the start point and again to set the destination.
 2. Press **Find Path**.
 3. The frontend requests `POST /find-path` from FastAPI.
-4. **Blue** road segments animate in the order of successful Dijkstra edge relaxations.
-5. The final **amber/yellow** shortest route is drawn on top.
-6. **Green** and **red** markers show the snapped start and destination road nodes.
+4. **Green** road segments animate in the order of successful Dijkstra edge relaxations.
+5. The final **red** shortest route is drawn on top after exploration finishes.
+6. Compact **green** and **red** map pins show the snapped start and destination road nodes.
 
 The visualization uses batched Leaflet polylines rather than one React component per road segment. Very large searches display at most the first 7,000 real relaxation segments, in order, to keep the browser responsive; no artificial roads are created. The final route is always displayed completely.
 
@@ -148,7 +148,7 @@ Open `http://localhost:3000`. The frontend expects the backend at `http://localh
 - Clicking near a road snaps to a graph node, so the exact route endpoint can differ slightly from the original click.
 - Only Kathmandu's `drive` network is loaded; walking and cycling paths are not included.
 - A large city graph can take time and network access to load on the first run.
-- The blue animation shows successful relaxations, not every inspected edge and not a live step-by-step backend stream.
+- The green animation shows successful relaxations, not every inspected edge and not a live step-by-step backend stream.
 
 ## Viva summary
 

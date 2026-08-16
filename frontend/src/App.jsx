@@ -1,15 +1,28 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Polyline, useMapEvents } from "react-leaflet";
+import L from "leaflet";
+import { MapContainer, Marker, Polyline, Popup, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 const COLORS = {
   start: "#22c55e",
   end: "#ef4444",
-  explored: "#3b82f6",
-  path: "#f59e0b",
+  explored: "#16a34a",
+  path: "#dc2626",
 };
+
+function createPinIcon(type, label) {
+  return L.divIcon({
+    className: "map-pin-wrapper",
+    html: `<span class="map-pin map-pin--${type}" aria-label="${label}"><span class="map-pin__dot"></span></span>`,
+    iconSize: [28, 38], iconAnchor: [14, 38], tooltipAnchor: [0, -34], popupAnchor: [0, -36],
+  });
+}
+
+const startIcon = createPinIcon("start", "Start");
+const destinationIcon = createPinIcon("destination", "Destination");
 
 // How many animation ticks we spread the whole exploration/path across.
 // Batching several edges per tick keeps the "frontier spreading outward"
@@ -40,7 +53,7 @@ function speedToDelayMs(speedValue) {
 export default function App() {
   const [startPoint, setStartPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
-  const [status, setStatus] = useState("Click on the map to choose a starting point");
+  const [status, setStatus] = useState("Click the map to select a starting point.");
   const [isRunning, setIsRunning] = useState(false);
   const [isAnimatingPath, setIsAnimatingPath] = useState(false);
   const [exploredSegments, setExploredSegments] = useState([]);
@@ -80,13 +93,13 @@ export default function App() {
 
     if (!startPoint) {
       setStartPoint(latlng);
-      setStatus("Start point selected. Click the map again to choose the destination.");
+      setStatus("Start selected — click the map to select destination.");
       return;
     }
 
     if (!endPoint) {
       setEndPoint(latlng);
-      setStatus("Start and destination selected. Press Find Path.");
+      setStatus("Ready — find the shortest path.");
       return;
     }
 
@@ -98,7 +111,7 @@ export default function App() {
     setExploredSegments([]);
     setPathSegments([]);
     setStats(null);
-    setStatus("New start point selected. Click the map again to choose the destination.");
+    setStatus("New start selected — click the map to select destination.");
   };
 
   const animateExploration = (edges, onDone, runId) => {
@@ -121,7 +134,7 @@ export default function App() {
       const displayNote = edges.length > MAX_EXPLORED_SEGMENTS
         ? ` (showing the first ${MAX_EXPLORED_SEGMENTS})`
         : "";
-      setStatus(`Dijkstra relaxing roads... ${Math.min(i, edges.length)} of ${edges.length}${displayNote}`);
+      setStatus(`Dijkstra is exploring the road network... ${Math.min(i, edges.length)} of ${edges.length}${displayNote}`);
 
       if (i < edges.length) {
         timerRef.current = setTimeout(tick, delay);
@@ -176,7 +189,7 @@ export default function App() {
     setExploredSegments([]);
     setPathSegments([]);
     setStats(null);
-    setStatus("Sending request to backend...");
+    setStatus("Preparing Dijkstra exploration...");
 
     let data;
     try {
@@ -216,16 +229,16 @@ export default function App() {
     setStartPoint({ lat: data.source.lat, lng: data.source.lon });
     setEndPoint({ lat: data.target.lat, lng: data.target.lon });
 
-    setStatus(`Dijkstra finalized ${data.nodes_explored} nodes. Showing road relaxations...`);
+    setStatus("Dijkstra is exploring the road network...");
 
     animateExploration(data.explored_edges, () => {
-      setStatus("Destination reached. Building shortest path...");
+      setStatus("Destination reached — displaying shortest route...");
       setIsRunning(false);
       setIsAnimatingPath(true);
 
       timerRef.current = setTimeout(() => {
         if (runId !== runIdRef.current) return;
-        setStatus("Displaying shortest route...");
+        setStatus("Destination reached — displaying shortest route...");
         animatePath(data.path_edges, () => {
           setStats({
             distance_km: data.distance_km,
@@ -233,7 +246,7 @@ export default function App() {
             path_length: data.path.length,
             execution_time_ms: data.execution_time_ms,
           });
-          setStatus(`Shortest path found — ${data.distance_km} km`);
+          setStatus("Shortest route found");
           setIsAnimatingPath(false);
         }, runId);
       }, 300);
@@ -249,15 +262,16 @@ export default function App() {
     setStats(null);
     setIsRunning(false);
     setIsAnimatingPath(false);
-    setStatus("Click on the map to choose a starting point");
+    setStatus("Click the map to select a starting point.");
   };
 
   const busy = isRunning || isAnimatingPath;
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#0f172a" }}>
+    <div className="app-shell" style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       {/* Header */}
       <div
+        className="project-header"
         style={{
           padding: "12px 20px",
           background: "#1e293b",
@@ -269,12 +283,16 @@ export default function App() {
           borderBottom: "1px solid #334155",
         }}
       >
-        <h1 style={{ margin: 0, fontSize: "1.2rem", color: "#f1f5f9" }}>Dijkstra Pathfinder</h1>
+        <div className="title-block">
+          <p>COMPUTER ENGINEERING · DSA VISUALIZER</p>
+          <h1>DIJKSTRA PATHFINDER</h1>
+          <small>Kathmandu Road Network · Real OpenStreetMap Data</small>
+        </div>
 
-        <span style={{ flex: 1, color: "#94a3b8", fontSize: "0.9rem", minWidth: "220px" }}>{status}</span>
+        <span className={`status-badge ${busy ? "status-badge--running" : stats ? "status-badge--complete" : ""}`} style={{ flex: 1, minWidth: "220px" }}><i />{status}</span>
 
-        <label style={{ color: "#94a3b8", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: "8px" }}>
-          Slow
+        <label className="speed-control" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span>Animation speed</span> Slow
           <input
             type="range"
             min="1"
@@ -301,7 +319,7 @@ export default function App() {
             fontSize: "0.9rem",
           }}
         >
-          {busy ? "Running..." : "Find Path"}
+          {busy ? "Dijkstra Running..." : "Find Shortest Path"}
         </button>
 
         <button
@@ -322,6 +340,7 @@ export default function App() {
 
       {/* Legend */}
       <div
+        className="map-legend"
         style={{
           padding: "8px 20px",
           background: "#1e293b",
@@ -334,8 +353,8 @@ export default function App() {
         {[
           { color: COLORS.start, label: "Start" },
           { color: COLORS.end, label: "Destination" },
-          { color: COLORS.explored, label: "Successful edge relaxations" },
-          { color: COLORS.path, label: "Shortest path" },
+          { color: COLORS.explored, label: "Dijkstra exploration" },
+          { color: COLORS.path, label: "Shortest route" },
         ].map(({ color, label }) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px", color: "#cbd5e1" }}>
             <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: color }} />
@@ -345,7 +364,7 @@ export default function App() {
       </div>
 
       {/* Map */}
-      <div style={{ flex: 1 }}>
+      <div className="map-frame" style={{ flex: 1 }}>
         <MapContainer
           center={[27.7172, 85.324]}
           zoom={14}
@@ -364,31 +383,29 @@ export default function App() {
           {exploredSegments.length > 0 && (
             <Polyline
               positions={exploredSegments}
-              pathOptions={{ color: COLORS.explored, weight: 2.5, opacity: 0.55 }}
+              pathOptions={{ color: COLORS.explored, weight: 2.5, opacity: 0.68, lineCap: "round" }}
             />
           )}
 
           {pathSegments.length > 0 && (
             <Polyline
               positions={pathSegments}
-              pathOptions={{ color: COLORS.path, weight: 6, opacity: 0.95, lineCap: "round" }}
+              pathOptions={{ color: COLORS.path, weight: 6, opacity: 0.96, lineCap: "round", lineJoin: "round" }}
             />
           )}
 
           {startPoint && (
-            <CircleMarker
-              center={[startPoint.lat, startPoint.lng]}
-              radius={9}
-              pathOptions={{ color: COLORS.start, fillColor: COLORS.start, fillOpacity: 1, weight: 2 }}
-            />
+            <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon}>
+              <Tooltip direction="top" offset={[0, -34]}>Start</Tooltip>
+              <Popup><strong>Start</strong><br />Snapped road-network node</Popup>
+            </Marker>
           )}
 
           {endPoint && (
-            <CircleMarker
-              center={[endPoint.lat, endPoint.lng]}
-              radius={9}
-              pathOptions={{ color: COLORS.end, fillColor: COLORS.end, fillOpacity: 1, weight: 2 }}
-            />
+            <Marker position={[endPoint.lat, endPoint.lng]} icon={destinationIcon}>
+              <Tooltip direction="top" offset={[0, -34]}>Destination</Tooltip>
+              <Popup><strong>Destination</strong><br />Snapped road-network node</Popup>
+            </Marker>
           )}
         </MapContainer>
       </div>
@@ -396,6 +413,7 @@ export default function App() {
       {/* Stats */}
       {stats && (
         <div
+          className="result-card"
           style={{
             padding: "10px 20px",
             background: "#1e293b",
@@ -406,9 +424,7 @@ export default function App() {
             borderTop: "1px solid #334155",
           }}
         >
-          <span>
-            Distance: <strong>{stats.distance_km} km</strong>
-          </span>
+          <span className="result-title">Shortest route found<br /><strong>{stats.distance_km} km</strong></span>
           <span>
             Nodes explored: <strong>{stats.nodes_explored}</strong>
           </span>
