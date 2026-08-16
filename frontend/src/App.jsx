@@ -1,77 +1,119 @@
-import React, { useState, useEffect, useRef } from "react";
-import { MapContainer, TileLayer, CircleMarker, Polyline, useMapEvents } from "react-leaflet";
+import React, { useRef, useState } from "react";
+import {
+  MapContainer,
+  TileLayer,
+  CircleMarker,
+  Polyline,
+  useMapEvents,
+} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 const API = "http://localhost:8000";
 
-// Colors for different states
 const COLORS = {
-  start: "#00ff00",
-  end: "#ff0000",
-  explored: "#3b82f6",   // blue - nodes being explored
-  visited: "#94a3b8",    // gray - already visited
-  path: "#f59e0b",       // yellow/amber - final path
+  start: "#16a34a",
+  end: "#dc2626",
+  explored: "#2563eb",
+  path: "#dc2626",
 };
 
-// Component to handle map click events
 function MapClickHandler({ onMapClick }) {
   useMapEvents({
-    click(e) {
-      onMapClick(e.latlng);
+    click(event) {
+      onMapClick(event.latlng);
     },
   });
+
   return null;
 }
 
-export default function App() {
+function App() {
   const [startPoint, setStartPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
-  const [clickStep, setClickStep] = useState("start"); // "start" or "end"
-  const [status, setStatus] = useState("Click on the map to set START point");
-  const [isRunning, setIsRunning] = useState(false);
+  const [selecting, setSelecting] = useState("start");
+  const [status, setStatus] = useState(
+    "Click on the map to select a starting point"
+  );
   const [exploredNodes, setExploredNodes] = useState([]);
   const [pathNodes, setPathNodes] = useState([]);
-  const [visitedNodes, setVisitedNodes] = useState([]);
   const [stats, setStats] = useState(null);
-  const [animationSpeed, setAnimationSpeed] = useState(10); // ms per step
-  const animRef = useRef(null);
+  const [running, setRunning] = useState(false);
+  const [speed, setSpeed] = useState(20);
+
+  const timerRef = useRef(null);
 
   const handleMapClick = (latlng) => {
-    if (isRunning) return;
+    if (running) return;
 
-    if (clickStep === "start") {
+    if (selecting === "start") {
       setStartPoint(latlng);
-      setClickStep("end");
-      setStatus("Now click to set END point");
-      // Reset previous results
+      setEndPoint(null);
       setExploredNodes([]);
       setPathNodes([]);
-      setVisitedNodes([]);
       setStats(null);
-    } else {
-      setEndPoint(latlng);
-      setClickStep("start");
-      setStatus("Points set! Click 'Find Path' to run Dijkstra");
-    }
-  };
-
-  const runDijkstra = async () => {
-    if (!startPoint || !endPoint) {
-      setStatus("Please set both start and end points first!");
+      setSelecting("end");
+      setStatus("Now select the destination point");
       return;
     }
 
-    setIsRunning(true);
+    setEndPoint(latlng);
+    setSelecting("start");
+    setStatus("Points selected. Press Find Path to start Dijkstra");
+  };
+
+  const animateExploration = (nodes, path, data) => {
+    let index = 0;
+
+    const animate = () => {
+      if (index < nodes.length) {
+        const node = nodes[index];
+
+        setExploredNodes((previous) => [
+          ...previous,
+          [node.lat, node.lon],
+        ]);
+
+        index += 1;
+        timerRef.current = setTimeout(animate, speed);
+        return;
+      }
+
+      setPathNodes(path.map((node) => [node.lat, node.lon]));
+
+      setStats({
+        distance: data.distance_km,
+        explored: data.nodes_explored,
+        path: data.path.length,
+      });
+
+      setStatus(
+        `Path found: ${data.distance_km} km through ${data.nodes_explored} explored nodes`
+      );
+
+      setRunning(false);
+    };
+
+    animate();
+  };
+
+  const findPath = async () => {
+    if (!startPoint || !endPoint) {
+      setStatus("Select both a start and destination point first");
+      return;
+    }
+
+    setRunning(true);
     setExploredNodes([]);
     setPathNodes([]);
-    setVisitedNodes([]);
     setStats(null);
-    setStatus("Running Dijkstra... fetching from backend");
+    setStatus("Finding the shortest path...");
 
     try {
-      const res = await fetch(`${API}/find-path`, {
+      const response = await fetch(`${API}/find-path`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           start_lat: startPoint.lat,
           start_lon: startPoint.lng,
@@ -80,227 +122,307 @@ export default function App() {
         }),
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        setStatus(`Error: ${err.detail}`);
-        setIsRunning(false);
+      const data = await response.json();
+
+      if (!response.ok) {
+        setStatus(data.detail || "Unable to find a path");
+        setRunning(false);
         return;
       }
 
-      const data = await res.json();
-      setStatus(`Animating exploration of ${data.nodes_explored} nodes...`);
+      setStatus(`Exploring ${data.nodes_explored} nodes...`);
 
-      // Animate explored nodes one by one
-      let i = 0;
-      const visited = [];
-
-      const animate = () => {
-        if (i < data.explored.length) {
-          const node = data.explored[i];
-          visited.push([node.lat, node.lon]);
-          setExploredNodes([...visited]);
-          i++;
-          animRef.current = setTimeout(animate, animationSpeed);
-        } else {
-          // Animation done — draw final path
-          const pathCoords = data.path.map((n) => [n.lat, n.lon]);
-          setPathNodes(pathCoords);
-          setVisitedNodes([...visited]);
-          setStats({
-            distance_km: data.distance_km,
-            nodes_explored: data.nodes_explored,
-            path_length: data.path.length,
-          });
-          setStatus(
-            `Done! Shortest path: ${data.distance_km} km | Explored ${data.nodes_explored} nodes`
-          );
-          setIsRunning(false);
-        }
-      };
-
-      animate();
-    } catch (err) {
-      setStatus("Cannot connect to backend. Is FastAPI running on port 8000?");
-      setIsRunning(false);
+      animateExploration(data.explored, data.path, data);
+    } catch {
+      setStatus(
+        "Could not connect to the backend. Make sure FastAPI is running on port 8000."
+      );
+      setRunning(false);
     }
   };
 
   const reset = () => {
-    if (animRef.current) clearTimeout(animRef.current);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+
     setStartPoint(null);
     setEndPoint(null);
-    setClickStep("start");
+    setSelecting("start");
     setExploredNodes([]);
     setPathNodes([]);
-    setVisitedNodes([]);
     setStats(null);
-    setIsRunning(false);
-    setStatus("Click on the map to set START point");
+    setRunning(false);
+    setStatus("Click on the map to select a starting point");
   };
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#0f172a" }}>
-      {/* Header */}
-      <div style={{
-        padding: "12px 20px",
-        background: "#1e293b",
-        color: "white",
+    <div
+      style={{
+        height: "100vh",
         display: "flex",
-        alignItems: "center",
-        gap: "20px",
-        flexWrap: "wrap",
-        borderBottom: "1px solid #334155"
-      }}>
-        <h1 style={{ margin: 0, fontSize: "1.2rem", color: "#f1f5f9" }}>
-          🗺️ Dijkstra Pathfinder
-        </h1>
+        flexDirection: "column",
+        background: "#111827",
+      }}
+    >
+      <header
+        style={{
+          padding: "14px 22px",
+          background: "#111827",
+          color: "#fff",
+          display: "flex",
+          alignItems: "center",
+          gap: "20px",
+          borderBottom: "1px solid #374151",
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "20px",
+              fontWeight: 600,
+            }}
+          >
+            Dijkstra Pathfinder
+          </h1>
 
-        {/* Status */}
-        <span style={{
-          flex: 1,
-          color: "#94a3b8",
-          fontSize: "0.9rem",
-          minWidth: "200px"
-        }}>
+          <div
+            style={{
+              color: "#9ca3af",
+              fontSize: "13px",
+              marginTop: "3px",
+            }}
+          >
+            Kathmandu road network
+          </div>
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            color: "#d1d5db",
+            fontSize: "14px",
+            minWidth: "250px",
+          }}
+        >
           {status}
-        </span>
+        </div>
 
-        {/* Speed control */}
-        <label style={{ color: "#94a3b8", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: "8px" }}>
-          Speed:
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            color: "#d1d5db",
+            fontSize: "13px",
+          }}
+        >
+          Speed
           <input
-            type="range" min="1" max="100" value={101 - animationSpeed}
-            onChange={(e) => setAnimationSpeed(101 - parseInt(e.target.value))}
-            style={{ width: "80px" }}
-            disabled={isRunning}
+            type="range"
+            min="1"
+            max="50"
+            value={51 - speed}
+            onChange={(event) =>
+              setSpeed(51 - Number(event.target.value))
+            }
+            disabled={running}
           />
         </label>
 
-        {/* Buttons */}
         <button
-          onClick={runDijkstra}
-          disabled={isRunning || !startPoint || !endPoint}
+          onClick={findPath}
+          disabled={running || !startPoint || !endPoint}
           style={{
-            padding: "8px 16px",
-            background: isRunning ? "#334155" : "#3b82f6",
-            color: "white",
+            padding: "9px 16px",
             border: "none",
             borderRadius: "6px",
-            cursor: isRunning ? "not-allowed" : "pointer",
-            fontWeight: "bold",
-            fontSize: "0.9rem"
+            background:
+              running || !startPoint || !endPoint
+                ? "#374151"
+                : "#2563eb",
+            color: "#fff",
+            cursor:
+              running || !startPoint || !endPoint
+                ? "not-allowed"
+                : "pointer",
+            fontWeight: 600,
           }}
         >
-          {isRunning ? "Running..." : "▶ Find Path"}
+          {running ? "Running..." : "Find Path"}
         </button>
 
         <button
           onClick={reset}
           style={{
-            padding: "8px 16px",
-            background: "#475569",
-            color: "white",
-            border: "none",
+            padding: "9px 16px",
+            border: "1px solid #4b5563",
             borderRadius: "6px",
+            background: "#1f2937",
+            color: "#fff",
             cursor: "pointer",
-            fontSize: "0.9rem"
           }}
         >
-          ↺ Reset
+          Reset
         </button>
+      </header>
+
+      <div
+        style={{
+          position: "absolute",
+          zIndex: 1000,
+          top: "88px",
+          left: "20px",
+          padding: "10px 14px",
+          background: "rgba(17, 24, 39, 0.92)",
+          borderRadius: "7px",
+          color: "#fff",
+          fontSize: "12px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div style={{ marginBottom: "6px" }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: "9px",
+              height: "9px",
+              borderRadius: "50%",
+              background: COLORS.start,
+              marginRight: "7px",
+            }}
+          />
+          Start
+        </div>
+
+        <div style={{ marginBottom: "6px" }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: "9px",
+              height: "9px",
+              borderRadius: "50%",
+              background: COLORS.explored,
+              marginRight: "7px",
+            }}
+          />
+          Explored
+        </div>
+
+        <div>
+          <span
+            style={{
+              display: "inline-block",
+              width: "9px",
+              height: "9px",
+              borderRadius: "50%",
+              background: COLORS.end,
+              marginRight: "7px",
+            }}
+          />
+          Shortest path / End
+        </div>
       </div>
 
-      {/* Legend */}
-      <div style={{
-        padding: "8px 20px",
-        background: "#1e293b",
-        display: "flex",
-        gap: "20px",
-        fontSize: "0.8rem",
-        borderBottom: "1px solid #334155"
-      }}>
-        {[
-          { color: COLORS.start, label: "Start" },
-          { color: COLORS.end, label: "End" },
-          { color: COLORS.explored, label: "Exploring" },
-          { color: COLORS.visited, label: "Visited" },
-          { color: COLORS.path, label: "Shortest Path" },
-        ].map(({ color, label }) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px", color: "#cbd5e1" }}>
-            <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: color }} />
-            {label}
-          </div>
-        ))}
-      </div>
-
-      {/* Map */}
-      <div style={{ flex: 1 }}>
+      <main style={{ flex: 1 }}>
         <MapContainer
-          center={[27.7172, 85.3240]}
-          zoom={14}
-          style={{ height: "100%", width: "100%" }}
+          center={[27.7172, 85.324]}
+          zoom={13}
+          style={{
+            height: "100%",
+            width: "100%",
+          }}
         >
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>'
+            attribution="&copy; OpenStreetMap contributors"
           />
 
           <MapClickHandler onMapClick={handleMapClick} />
 
-          {/* Visited nodes (gray, small) */}
-          {exploredNodes.map((pos, i) => (
+          {exploredNodes.map((position, index) => (
             <CircleMarker
-              key={`v-${i}`}
-              center={pos}
-              radius={3}
-              pathOptions={{ color: COLORS.explored, fillColor: COLORS.explored, fillOpacity: 0.6, weight: 0 }}
+              key={index}
+              center={position}
+              radius={2.5}
+              pathOptions={{
+                color: COLORS.explored,
+                fillColor: COLORS.explored,
+                fillOpacity: 0.7,
+                weight: 0,
+              }}
             />
           ))}
 
-          {/* Final path line */}
           {pathNodes.length > 1 && (
             <Polyline
               positions={pathNodes}
-              pathOptions={{ color: COLORS.path, weight: 5, opacity: 0.9 }}
+              pathOptions={{
+                color: COLORS.path,
+                weight: 6,
+                opacity: 0.95,
+              }}
             />
           )}
 
-          {/* Start marker */}
           {startPoint && (
             <CircleMarker
               center={[startPoint.lat, startPoint.lng]}
-              radius={10}
-              pathOptions={{ color: COLORS.start, fillColor: COLORS.start, fillOpacity: 1, weight: 2 }}
+              radius={9}
+              pathOptions={{
+                color: "#ffffff",
+                fillColor: COLORS.start,
+                fillOpacity: 1,
+                weight: 3,
+              }}
             />
           )}
 
-          {/* End marker */}
           {endPoint && (
             <CircleMarker
               center={[endPoint.lat, endPoint.lng]}
-              radius={10}
-              pathOptions={{ color: COLORS.end, fillColor: COLORS.end, fillOpacity: 1, weight: 2 }}
+              radius={9}
+              pathOptions={{
+                color: "#ffffff",
+                fillColor: COLORS.end,
+                fillOpacity: 1,
+                weight: 3,
+              }}
             />
           )}
         </MapContainer>
-      </div>
+      </main>
 
-      {/* Stats panel */}
       {stats && (
-        <div style={{
-          padding: "10px 20px",
-          background: "#1e293b",
-          color: "#f1f5f9",
-          display: "flex",
-          gap: "30px",
-          fontSize: "0.9rem",
-          borderTop: "1px solid #334155"
-        }}>
-          <span>📏 Distance: <strong>{stats.distance_km} km</strong></span>
-          <span>🔍 Nodes explored: <strong>{stats.nodes_explored}</strong></span>
-          <span>🛣️ Path nodes: <strong>{stats.path_length}</strong></span>
-        </div>
+        <footer
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: "40px",
+            padding: "11px",
+            background: "#111827",
+            color: "#d1d5db",
+            borderTop: "1px solid #374151",
+            fontSize: "13px",
+          }}
+        >
+          <span>
+            Distance <strong>{stats.distance} km</strong>
+          </span>
+
+          <span>
+            Explored <strong>{stats.explored}</strong> nodes
+          </span>
+
+          <span>
+            Path <strong>{stats.path}</strong> nodes
+          </span>
+        </footer>
       )}
     </div>
   );
 }
+
+export default App;

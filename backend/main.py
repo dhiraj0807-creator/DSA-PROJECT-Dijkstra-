@@ -5,9 +5,9 @@ from map_loader import load_map
 from dijkstra import dijkstra
 import math
 
+
 app = FastAPI(title="Dijkstra Maps API")
 
-# Allow React frontend to talk to FastAPI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load map once on startup
 print("Loading map data, please wait...")
 nodes, edges, G = load_map("Kathmandu, Nepal")
 print("Map loaded successfully!")
@@ -29,73 +28,99 @@ class PathRequest(BaseModel):
 
 
 def find_nearest_node(lat, lon):
-    """Find the nearest graph node to given lat/lon coordinates."""
-    min_dist = float('inf')
     nearest = None
+    minimum_distance = float("inf")
 
-    for node_id, data in nodes.items():
-        # Euclidean distance approximation (good enough for nearby points)
-        dlat = data["lat"] - lat
-        dlon = data["lon"] - lon
-        dist = math.sqrt(dlat**2 + dlon**2)
+    for node_id, node in nodes.items():
+        dlat = node["lat"] - lat
+        dlon = node["lon"] - lon
+        distance = dlat * dlat + dlon * dlon
 
-        if dist < min_dist:
-            min_dist = dist
+        if distance < minimum_distance:
+            minimum_distance = distance
             nearest = node_id
 
     return nearest
 
 
+def node_to_coords(node_id):
+    node = nodes[node_id]
+
+    return {
+        "id": node_id,
+        "lat": node["lat"],
+        "lon": node["lon"]
+    }
+
+
 @app.get("/map")
 def get_map():
-    """Return all nodes and edges for the frontend to render the map."""
     return {
         "nodes": nodes,
-        "edges": {
-            u: list(vs.keys())
-            for u, vs in edges.items()
-        }
+        "edges": edges
     }
 
 
 @app.post("/find-path")
-def find_path(req: PathRequest):
-    """
-    Run Dijkstra from start to end coordinates.
-    Returns explored nodes (for animation) and the final shortest path.
-    """
-    # Find nearest graph nodes to clicked coordinates
-    source = find_nearest_node(req.start_lat, req.start_lon)
-    target = find_nearest_node(req.end_lat, req.end_lon)
+def find_path(request: PathRequest):
+    source = find_nearest_node(
+        request.start_lat,
+        request.start_lon
+    )
 
-    if not source or not target:
-        raise HTTPException(status_code=400, detail="Could not find nearby nodes")
+    target = find_nearest_node(
+        request.end_lat,
+        request.end_lon
+    )
+
+    if source is None or target is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not find nearby nodes"
+        )
 
     if source == target:
-        raise HTTPException(status_code=400, detail="Start and end are the same point")
+        raise HTTPException(
+            status_code=400,
+            detail="Start and end are too close"
+        )
 
-    # Run Dijkstra from scratch
-    explored, path, distance = dijkstra(edges, nodes, source, target)
+    explored, path, distance = dijkstra(
+        edges,
+        source,
+        target
+    )
 
     if not path:
-        raise HTTPException(status_code=404, detail="No path found between these points")
-
-    # Convert node ids to lat/lon for frontend
-    def node_to_coords(node_id):
-        n = nodes.get(node_id, {})
-        return {"lat": n.get("lat"), "lon": n.get("lon"), "id": node_id}
+        raise HTTPException(
+            status_code=404,
+            detail="No route found"
+        )
 
     return {
         "source": node_to_coords(source),
         "target": node_to_coords(target),
-        "explored": [node_to_coords(n) for n in explored],
-        "path": [node_to_coords(n) for n in path],
+        "explored": [
+            node_to_coords(node)
+            for node in explored
+        ],
+        "path": [
+            node_to_coords(node)
+            for node in path
+        ],
         "distance_meters": round(distance, 2),
         "distance_km": round(distance / 1000, 3),
-        "nodes_explored": len(explored),
+        "nodes_explored": len(explored)
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "nodes": len(nodes), "edges": len(edges)}
+    return {
+        "status": "ok",
+        "nodes": len(nodes),
+        "edges": sum(
+            len(neighbors)
+            for neighbors in edges.values()
+        )
+    }
