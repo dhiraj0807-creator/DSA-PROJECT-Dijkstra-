@@ -62,6 +62,16 @@ def edge_lookup(u, v):
     return graph.get(u, {}).get(v)
 
 
+def haversine_distance_meters(lat1, lon1, lat2, lon2):
+    """Return the straight-line distance between two latitude/longitude points."""
+    radius_m = 6_371_000
+    lat1, lon1, lat2, lon2 = map(math.radians, (lat1, lon1, lat2, lon2))
+    d_lat = lat2 - lat1
+    d_lon = lon2 - lon1
+    a = math.sin(d_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(d_lon / 2) ** 2
+    return 2 * radius_m * math.asin(math.sqrt(a))
+
+
 def validate_coordinates(lat, lon, label):
     """Reject invalid or clearly out-of-area map clicks before snapping."""
     if not math.isfinite(lat) or not math.isfinite(lon):
@@ -99,6 +109,7 @@ def find_path(req: PathRequest):
     validate_coordinates(req.start_lat, req.start_lon, "Start")
     validate_coordinates(req.end_lat, req.end_lon, "Destination")
 
+    request_start_time = time.perf_counter()
     try:
         source = find_nearest_node(req.start_lat, req.start_lon)
         target = find_nearest_node(req.end_lat, req.end_lon)
@@ -111,9 +122,9 @@ def find_path(req: PathRequest):
             detail="Start and destination snapped to the same road point. Try points farther apart.",
         )
 
-    start_time = time.perf_counter()
+    algorithm_start_time = time.perf_counter()
     explored_nodes, explored_edges, path, distance = dijkstra(graph, source, target)
-    execution_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    algorithm_time_ms = round((time.perf_counter() - algorithm_start_time) * 1000, 2)
 
     if not path:
         raise HTTPException(status_code=404, detail="No path found between these points")
@@ -136,17 +147,28 @@ def find_path(req: PathRequest):
         for u, v in zip(path, path[1:])
     ]
 
-    return {
-        "source": node_to_coords(source),
-        "target": node_to_coords(target),
+    source_coords = node_to_coords(source)
+    target_coords = node_to_coords(target)
+    response = {
+        "source": source_coords,
+        "target": target_coords,
         "explored_edges": explored_edges_out,
         "path": [node_to_coords(n) for n in path],
         "path_edges": path_edges,
         "distance_meters": round(distance, 2),
         "distance_km": round(distance / 1000, 3),
         "nodes_explored": len(explored_nodes),
-        "execution_time_ms": execution_time_ms,
+        "explored_edges_count": len(explored_edges),
+        "exploration_percentage": round(len(explored_nodes) / len(nodes) * 100, 2),
+        "path_segments": max(0, len(path) - 1),
+        "snap_distances_m": {
+            "start": round(haversine_distance_meters(req.start_lat, req.start_lon, source_coords["lat"], source_coords["lon"]), 1),
+            "destination": round(haversine_distance_meters(req.end_lat, req.end_lon, target_coords["lat"], target_coords["lon"]), 1),
+        },
+        "algorithm_time_ms": algorithm_time_ms,
     }
+    response["backend_processing_ms"] = round((time.perf_counter() - request_start_time) * 1000, 2)
+    return response
 
 
 @app.get("/health")

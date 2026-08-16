@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import L from "leaflet";
-import { MapContainer, Marker, Polyline, Popup, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
+import { MapContainer, Marker, Polyline, Popup, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
-const COLORS = { start: "#22c55e", end: "#ef4444", explored: "#16a34a", path: "#dc2626" };
+const COLORS = { start: "#22c55e", end: "#ef4444", explored: "#3b82f6", path: "#dc2626" };
 const EXPLORE_TICKS = 220;
 const PATH_TICKS = 60;
 const EXPLORE_DELAY_MS = 75;
@@ -28,6 +28,14 @@ function MapClickHandler({ onMapClick }) {
   return null;
 }
 
+function MapRouteFitter({ path }) {
+  const map = useMap();
+  useEffect(() => {
+    if (path.length > 1) map.fitBounds(path.map(({ lat, lon }) => [lat, lon]), { padding: [42, 42] });
+  }, [map, path]);
+  return null;
+}
+
 export default function App() {
   const [startPoint, setStartPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
@@ -36,6 +44,7 @@ export default function App() {
   const [isAnimatingPath, setIsAnimatingPath] = useState(false);
   const [exploredSegments, setExploredSegments] = useState([]);
   const [pathSegments, setPathSegments] = useState([]);
+  const [routePath, setRoutePath] = useState([]);
   const [stats, setStats] = useState(null);
   const timerRef = useRef(null);
   const requestRef = useRef(null);
@@ -64,6 +73,7 @@ export default function App() {
     setEndPoint(null);
     setExploredSegments([]);
     setPathSegments([]);
+    setRoutePath([]);
     setStats(null);
     setStatus("New start selected. Select a destination.");
   };
@@ -112,7 +122,9 @@ export default function App() {
     setIsAnimatingPath(false);
     setExploredSegments([]);
     setPathSegments([]);
+    setRoutePath([]);
     setStats(null);
+    const requestStart = performance.now();
     setStatus("Preparing Dijkstra exploration...");
     let data;
     try {
@@ -139,6 +151,8 @@ export default function App() {
     if (runId !== runIdRef.current) return;
     setStartPoint({ lat: data.source.lat, lng: data.source.lon });
     setEndPoint({ lat: data.target.lat, lng: data.target.lon });
+    setRoutePath(data.path);
+    const browserRequestMs = performance.now() - requestStart;
     setStatus("Dijkstra is exploring the road network...");
     animateExploration(data.explored_edges, () => {
       setStatus("Destination reached. Displaying shortest route...");
@@ -147,7 +161,7 @@ export default function App() {
       timerRef.current = setTimeout(() => {
         if (runId !== runIdRef.current) return;
         animatePath(data.path_edges, () => {
-          setStats({ distance_km: data.distance_km, nodes_explored: data.nodes_explored, path_length: data.path.length, execution_time_ms: data.execution_time_ms });
+          setStats({ ...data, browser_request_ms: browserRequestMs, total_visible_ms: performance.now() - requestStart });
           setStatus("Shortest route found.");
           setIsAnimatingPath(false);
         }, runId);
@@ -157,7 +171,7 @@ export default function App() {
 
   const reset = () => {
     cancelActiveWork();
-    setStartPoint(null); setEndPoint(null); setExploredSegments([]); setPathSegments([]); setStats(null);
+    setStartPoint(null); setEndPoint(null); setExploredSegments([]); setPathSegments([]); setRoutePath([]); setStats(null);
     setIsRunning(false); setIsAnimatingPath(false);
     setStatus("Click on the map to select a starting point.");
   };
@@ -187,6 +201,7 @@ export default function App() {
           <MapContainer center={[27.7172, 85.324]} zoom={14} preferCanvas={true} style={{ height: "100%", width: "100%" }}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>' />
             <MapClickHandler onMapClick={handleMapClick} />
+            <MapRouteFitter path={routePath} />
             {exploredSegments.length > 0 && <Polyline positions={exploredSegments} pathOptions={{ color: COLORS.explored, weight: 2.5, opacity: 0.68, lineCap: "round" }} />}
             {pathSegments.length > 0 && <Polyline positions={pathSegments} pathOptions={{ color: COLORS.path, weight: 6, opacity: 0.96, lineCap: "round", lineJoin: "round" }} />}
             {startPoint && <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon}><Tooltip direction="top" offset={[0, -34]}>Start</Tooltip><Popup><strong>Start</strong><br />Snapped road-network node</Popup></Marker>}
@@ -210,11 +225,14 @@ export default function App() {
       </section>
 
       {stats && <section className="result-card" aria-live="polite">
-        <div className="result-route"><p>Shortest Route Found</p><strong>Distance: {stats.distance_km.toFixed(2)} km</strong></div>
         <dl className="result-stats">
-          <div><dt>Nodes Explored</dt><dd>{stats.nodes_explored}</dd></div>
-          <div><dt>Path Nodes</dt><dd>{stats.path_length}</dd></div>
-          <div><dt>Computational Time</dt><dd>{stats.execution_time_ms} ms</dd></div>
+          <div title="Nodes permanently settled by Dijkstra."><dt>Nodes Explored</dt><dd>{stats.nodes_explored.toLocaleString()}</dd></div>
+          <div title="Share of the road-network nodes explored."><dt>Search Coverage</dt><dd>{stats.exploration_percentage}%</dd></div>
+          <div title="Road segments in the final route."><dt>Route Segments</dt><dd>{stats.path_segments.toLocaleString()}</dd></div>
+          <div title="Total length of the shortest route."><dt>Route Distance</dt><dd>{stats.distance_km.toFixed(2)} km</dd></div>
+          <div title="Time spent only inside the custom Dijkstra algorithm."><dt>Dijkstra Execution Time</dt><dd>{stats.algorithm_time_ms} ms</dd></div>
+          <div title="Min-heap Dijkstra time complexity."><dt>Time Complexity</dt><dd>O((V + E) log V)*</dd></div>
+          <div title="Distance, predecessor, visited, and priority-queue state."><dt>Space Complexity</dt><dd>O(V)</dd></div>
         </dl>
       </section>}
     </div>

@@ -84,7 +84,7 @@ button { font: inherit; }
 .legend-marker--start { background: #22a05a; }
 .legend-marker--destination { background: #dc2626; }
 .legend-line { width: 17px; height: 3px; border-radius: 1px; }
-.legend-line--explored { background: #16a34a; }
+.legend-line--explored { background: #3b82f6; }
 .legend-line--path { height: 4px; background: #dc2626; }
 
 .control-panel, .result-card {
@@ -109,13 +109,12 @@ button { font: inherit; }
 .reset-button { border: 1px solid #bdc8d2; background: #fff; color: #475569; }
 .reset-button:hover { border-color: #718096; background: #f8fafc; }
 
-.result-card { display: flex; align-items: center; justify-content: space-between; gap: 25px; margin-top: 12px; margin-bottom: 18px; padding: 12px 15px; border-left: 3px solid #dc2626; }
-.result-route p { margin: 0 0 3px; color: #64748b; font-size: .66rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
-.result-route strong { color: #b91c1c; font-size: 1.05rem; letter-spacing: -.015em; }
-.result-stats { display: flex; gap: clamp(17px, 4vw, 52px); margin: 0; }
-.result-stats div { min-width: max-content; }
+.result-card { margin-top: 12px; margin-bottom: 18px; padding: 15px; border-left: 3px solid #dc2626; }
+.result-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 24px; margin: 0; }
+.result-stats div { min-width: 0; }
 .result-stats dt { color: #718096; font-size: .65rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .result-stats dd { margin: 3px 0 0; color: #334155; font-size: .85rem; font-weight: 700; }
+.result-stats small { color: #718096; font-size: .72rem; font-weight: 650; }
 
 .map-pin-wrapper { background: transparent; border: 0; }
 .map-pin { position: relative; display: block; width: 27px; height: 27px; border: 2px solid #fff; border-radius: 50% 50% 50% 0; box-shadow: 0 2px 6px rgba(15, 23, 42, .35); transform: rotate(-45deg); }
@@ -136,8 +135,7 @@ button { font: inherit; }
   .status-badge { align-items: center; }
   .route-controls { width: 100%; }
   .route-controls button { flex: 1; }
-  .result-card { align-items: flex-start; flex-direction: column; gap: 13px; }
-  .result-stats { width: 100%; justify-content: space-between; gap: 10px; }
+  .result-stats { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 }
 
 @media (max-width: 410px) {
