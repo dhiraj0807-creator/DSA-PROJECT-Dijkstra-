@@ -1,369 +1,377 @@
-import React, { useRef, useState } from "react";
-import {
-  MapContainer,
-  TileLayer,
-  CircleMarker,
-  Polyline,
-  useMapEvents,
-} from "react-leaflet";
+import React, { useEffect, useRef, useState } from "react";
+import { MapContainer, TileLayer, CircleMarker, Polyline, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
-const API = "http://localhost:8000";
+const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 const COLORS = {
-  start: "#16a34a",
-  end: "#dc2626",
-  explored: "#2563eb",
-  path: "#dc2626",
+  start: "#22c55e",
+  end: "#ef4444",
+  explored: "#3b82f6",
+  path: "#f59e0b",
 };
+
+// How many animation ticks we spread the whole exploration/path across.
+// Batching several edges per tick keeps the "frontier spreading outward"
+// feel even when a route explores thousands of road segments, without
+// making the animation take forever (or the browser choke on one timer
+// per edge).
+const EXPLORE_TICKS = 220;
+const PATH_TICKS = 60;
+// Drawing every edge from a very large search can overwhelm a browser. We
+// keep the first real relaxation segments in their actual order; no roads
+// are invented. The route itself is always drawn completely.
+const MAX_EXPLORED_SEGMENTS = 7000;
 
 function MapClickHandler({ onMapClick }) {
   useMapEvents({
-    click(event) {
-      onMapClick(event.latlng);
+    click(e) {
+      onMapClick(e.latlng);
     },
   });
-
   return null;
 }
 
-function App() {
+function speedToDelayMs(speedValue) {
+  // speedValue: 1 (slow) .. 100 (fast) -> delay in ms per animation tick
+  return 220 - speedValue * 2;
+}
+
+export default function App() {
   const [startPoint, setStartPoint] = useState(null);
   const [endPoint, setEndPoint] = useState(null);
-  const [selecting, setSelecting] = useState("start");
-  const [status, setStatus] = useState(
-    "Click on the map to select a starting point"
-  );
-  const [exploredNodes, setExploredNodes] = useState([]);
-  const [pathNodes, setPathNodes] = useState([]);
+  const [status, setStatus] = useState("Click on the map to choose a starting point");
+  const [isRunning, setIsRunning] = useState(false);
+  const [isAnimatingPath, setIsAnimatingPath] = useState(false);
+  const [exploredSegments, setExploredSegments] = useState([]);
+  const [pathSegments, setPathSegments] = useState([]);
   const [stats, setStats] = useState(null);
-  const [running, setRunning] = useState(false);
-  const [speed, setSpeed] = useState(20);
+  const [speed, setSpeed] = useState(70); // 1 (slow) - 100 (fast)
 
   const timerRef = useRef(null);
+  const requestRef = useRef(null);
+  const runIdRef = useRef(0);
+
+  const clearPendingTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const cancelActiveWork = () => {
+    runIdRef.current += 1;
+    clearPendingTimer();
+    if (requestRef.current) {
+      requestRef.current.abort();
+      requestRef.current = null;
+    }
+  };
+
+  useEffect(() => () => {
+    // Do not let an old request or timer update an unmounted map component.
+    runIdRef.current += 1;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (requestRef.current) requestRef.current.abort();
+  }, []);
 
   const handleMapClick = (latlng) => {
-    if (running) return;
+    if (isRunning || isAnimatingPath) return;
 
-    if (selecting === "start") {
+    if (!startPoint) {
       setStartPoint(latlng);
-      setEndPoint(null);
-      setExploredNodes([]);
-      setPathNodes([]);
-      setStats(null);
-      setSelecting("end");
-      setStatus("Now select the destination point");
+      setStatus("Start point selected. Click the map again to choose the destination.");
       return;
     }
 
-    setEndPoint(latlng);
-    setSelecting("start");
-    setStatus("Points selected. Press Find Path to start Dijkstra");
+    if (!endPoint) {
+      setEndPoint(latlng);
+      setStatus("Start and destination selected. Press Find Path.");
+      return;
+    }
+
+    // Both points are already set and a run has completed — treat this
+    // click as the start of a brand new selection instead of forcing a
+    // manual Reset first.
+    setStartPoint(latlng);
+    setEndPoint(null);
+    setExploredSegments([]);
+    setPathSegments([]);
+    setStats(null);
+    setStatus("New start point selected. Click the map again to choose the destination.");
   };
 
-  const animateExploration = (nodes, path, data) => {
-    let index = 0;
+  const animateExploration = (edges, onDone, runId) => {
+    const chunkSize = Math.max(1, Math.ceil(edges.length / EXPLORE_TICKS));
+    const delay = speedToDelayMs(speed);
+    const revealed = [];
+    let i = 0;
 
-    const animate = () => {
-      if (index < nodes.length) {
-        const node = nodes[index];
+    const tick = () => {
+      if (runId !== runIdRef.current) return;
 
-        setExploredNodes((previous) => [
-          ...previous,
-          [node.lat, node.lon],
-        ]);
-
-        index += 1;
-        timerRef.current = setTimeout(animate, speed);
-        return;
+      const next = edges.slice(i, i + chunkSize);
+      for (const edge of next) {
+        if (revealed.length < MAX_EXPLORED_SEGMENTS && edge.geometry && edge.geometry.length > 1) {
+          revealed.push(edge.geometry);
+        }
       }
+      i += chunkSize;
+      setExploredSegments([...revealed]);
+      const displayNote = edges.length > MAX_EXPLORED_SEGMENTS
+        ? ` (showing the first ${MAX_EXPLORED_SEGMENTS})`
+        : "";
+      setStatus(`Dijkstra relaxing roads... ${Math.min(i, edges.length)} of ${edges.length}${displayNote}`);
 
-      setPathNodes(path.map((node) => [node.lat, node.lon]));
-
-      setStats({
-        distance: data.distance_km,
-        explored: data.nodes_explored,
-        path: data.path.length,
-      });
-
-      setStatus(
-        `Path found: ${data.distance_km} km through ${data.nodes_explored} explored nodes`
-      );
-
-      setRunning(false);
+      if (i < edges.length) {
+        timerRef.current = setTimeout(tick, delay);
+      } else {
+        if (runId === runIdRef.current) onDone();
+      }
     };
 
-    animate();
+    tick();
   };
 
-  const findPath = async () => {
+  const animatePath = (edges, onDone, runId) => {
+    const chunkSize = Math.max(1, Math.ceil(edges.length / PATH_TICKS));
+    const delay = Math.max(15, speedToDelayMs(speed) / 2);
+    const revealed = [];
+    let i = 0;
+
+    const tick = () => {
+      if (runId !== runIdRef.current) return;
+
+      const next = edges.slice(i, i + chunkSize);
+      for (const edge of next) {
+        if (edge.geometry && edge.geometry.length > 1) {
+          revealed.push(edge.geometry);
+        }
+      }
+      i += chunkSize;
+      setPathSegments([...revealed]);
+
+      if (i < edges.length) {
+        timerRef.current = setTimeout(tick, delay);
+      } else {
+        if (runId === runIdRef.current) onDone();
+      }
+    };
+
+    tick();
+  };
+
+  const runDijkstra = async () => {
     if (!startPoint || !endPoint) {
-      setStatus("Select both a start and destination point first");
+      setStatus("Please select both a start and a destination point first.");
       return;
     }
 
-    setRunning(true);
-    setExploredNodes([]);
-    setPathNodes([]);
+    cancelActiveWork();
+    const runId = runIdRef.current;
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setIsRunning(true);
+    setIsAnimatingPath(false);
+    setExploredSegments([]);
+    setPathSegments([]);
     setStats(null);
-    setStatus("Finding the shortest path...");
+    setStatus("Sending request to backend...");
 
+    let data;
     try {
-      const response = await fetch(`${API}/find-path`, {
+      const res = await fetch(`${API}/find-path`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           start_lat: startPoint.lat,
           start_lon: startPoint.lng,
           end_lat: endPoint.lat,
           end_lon: endPoint.lng,
         }),
+        signal: controller.signal,
       });
 
-      const data = await response.json();
+      if (runId !== runIdRef.current) return;
+      requestRef.current = null;
 
-      if (!response.ok) {
-        setStatus(data.detail || "Unable to find a path");
-        setRunning(false);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setStatus(err.detail || "The backend rejected this request.");
+        setIsRunning(false);
         return;
       }
 
-      setStatus(`Exploring ${data.nodes_explored} nodes...`);
-
-      animateExploration(data.explored, data.path, data);
-    } catch {
-      setStatus(
-        "Could not connect to the backend. Make sure FastAPI is running on port 8000."
-      );
-      setRunning(false);
+      data = await res.json();
+    } catch (err) {
+      if (err.name === "AbortError" || runId !== runIdRef.current) return;
+      setStatus("Could not connect to the backend. Make sure FastAPI is running on port 8000.");
+      setIsRunning(false);
+      return;
     }
+
+    if (runId !== runIdRef.current) return;
+    // Replace the click markers with the exact road nodes used by Dijkstra,
+    // so the visible endpoints connect to the displayed route.
+    setStartPoint({ lat: data.source.lat, lng: data.source.lon });
+    setEndPoint({ lat: data.target.lat, lng: data.target.lon });
+
+    setStatus(`Dijkstra finalized ${data.nodes_explored} nodes. Showing road relaxations...`);
+
+    animateExploration(data.explored_edges, () => {
+      setStatus("Destination reached. Building shortest path...");
+      setIsRunning(false);
+      setIsAnimatingPath(true);
+
+      timerRef.current = setTimeout(() => {
+        if (runId !== runIdRef.current) return;
+        setStatus("Displaying shortest route...");
+        animatePath(data.path_edges, () => {
+          setStats({
+            distance_km: data.distance_km,
+            nodes_explored: data.nodes_explored,
+            path_length: data.path.length,
+            execution_time_ms: data.execution_time_ms,
+          });
+          setStatus(`Shortest path found — ${data.distance_km} km`);
+          setIsAnimatingPath(false);
+        }, runId);
+      }, 300);
+    }, runId);
   };
 
   const reset = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-
+    cancelActiveWork();
     setStartPoint(null);
     setEndPoint(null);
-    setSelecting("start");
-    setExploredNodes([]);
-    setPathNodes([]);
+    setExploredSegments([]);
+    setPathSegments([]);
     setStats(null);
-    setRunning(false);
-    setStatus("Click on the map to select a starting point");
+    setIsRunning(false);
+    setIsAnimatingPath(false);
+    setStatus("Click on the map to choose a starting point");
   };
 
+  const busy = isRunning || isAnimatingPath;
+
   return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "#111827",
-      }}
-    >
-      <header
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#0f172a" }}>
+      {/* Header */}
+      <div
         style={{
-          padding: "14px 22px",
-          background: "#111827",
-          color: "#fff",
+          padding: "12px 20px",
+          background: "#1e293b",
+          color: "white",
           display: "flex",
           alignItems: "center",
           gap: "20px",
-          borderBottom: "1px solid #374151",
           flexWrap: "wrap",
+          borderBottom: "1px solid #334155",
         }}
       >
-        <div>
-          <h1
-            style={{
-              margin: 0,
-              fontSize: "20px",
-              fontWeight: 600,
-            }}
-          >
-            Dijkstra Pathfinder
-          </h1>
+        <h1 style={{ margin: 0, fontSize: "1.2rem", color: "#f1f5f9" }}>Dijkstra Pathfinder</h1>
 
-          <div
-            style={{
-              color: "#9ca3af",
-              fontSize: "13px",
-              marginTop: "3px",
-            }}
-          >
-            Kathmandu road network
-          </div>
-        </div>
+        <span style={{ flex: 1, color: "#94a3b8", fontSize: "0.9rem", minWidth: "220px" }}>{status}</span>
 
-        <div
-          style={{
-            flex: 1,
-            color: "#d1d5db",
-            fontSize: "14px",
-            minWidth: "250px",
-          }}
-        >
-          {status}
-        </div>
-
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            color: "#d1d5db",
-            fontSize: "13px",
-          }}
-        >
-          Speed
+        <label style={{ color: "#94a3b8", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: "8px" }}>
+          Slow
           <input
             type="range"
             min="1"
-            max="50"
-            value={51 - speed}
-            onChange={(event) =>
-              setSpeed(51 - Number(event.target.value))
-            }
-            disabled={running}
+            max="100"
+            value={speed}
+            onChange={(e) => setSpeed(parseInt(e.target.value, 10))}
+            style={{ width: "90px" }}
+            disabled={busy}
           />
+          Fast
         </label>
 
         <button
-          onClick={findPath}
-          disabled={running || !startPoint || !endPoint}
+          onClick={runDijkstra}
+          disabled={busy || !startPoint || !endPoint}
           style={{
-            padding: "9px 16px",
+            padding: "8px 16px",
+            background: busy || !startPoint || !endPoint ? "#334155" : "#3b82f6",
+            color: "white",
             border: "none",
             borderRadius: "6px",
-            background:
-              running || !startPoint || !endPoint
-                ? "#374151"
-                : "#2563eb",
-            color: "#fff",
-            cursor:
-              running || !startPoint || !endPoint
-                ? "not-allowed"
-                : "pointer",
-            fontWeight: 600,
+            cursor: busy || !startPoint || !endPoint ? "not-allowed" : "pointer",
+            fontWeight: "bold",
+            fontSize: "0.9rem",
           }}
         >
-          {running ? "Running..." : "Find Path"}
+          {busy ? "Running..." : "Find Path"}
         </button>
 
         <button
           onClick={reset}
           style={{
-            padding: "9px 16px",
-            border: "1px solid #4b5563",
+            padding: "8px 16px",
+            background: "#475569",
+            color: "white",
+            border: "none",
             borderRadius: "6px",
-            background: "#1f2937",
-            color: "#fff",
             cursor: "pointer",
+            fontSize: "0.9rem",
           }}
         >
           Reset
         </button>
-      </header>
-
-      <div
-        style={{
-          position: "absolute",
-          zIndex: 1000,
-          top: "88px",
-          left: "20px",
-          padding: "10px 14px",
-          background: "rgba(17, 24, 39, 0.92)",
-          borderRadius: "7px",
-          color: "#fff",
-          fontSize: "12px",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
-        }}
-      >
-        <div style={{ marginBottom: "6px" }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: "9px",
-              height: "9px",
-              borderRadius: "50%",
-              background: COLORS.start,
-              marginRight: "7px",
-            }}
-          />
-          Start
-        </div>
-
-        <div style={{ marginBottom: "6px" }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: "9px",
-              height: "9px",
-              borderRadius: "50%",
-              background: COLORS.explored,
-              marginRight: "7px",
-            }}
-          />
-          Explored
-        </div>
-
-        <div>
-          <span
-            style={{
-              display: "inline-block",
-              width: "9px",
-              height: "9px",
-              borderRadius: "50%",
-              background: COLORS.end,
-              marginRight: "7px",
-            }}
-          />
-          Shortest path / End
-        </div>
       </div>
 
-      <main style={{ flex: 1 }}>
+      {/* Legend */}
+      <div
+        style={{
+          padding: "8px 20px",
+          background: "#1e293b",
+          display: "flex",
+          gap: "20px",
+          fontSize: "0.8rem",
+          borderBottom: "1px solid #334155",
+        }}
+      >
+        {[
+          { color: COLORS.start, label: "Start" },
+          { color: COLORS.end, label: "Destination" },
+          { color: COLORS.explored, label: "Successful edge relaxations" },
+          { color: COLORS.path, label: "Shortest path" },
+        ].map(({ color, label }) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px", color: "#cbd5e1" }}>
+            <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: color }} />
+            {label}
+          </div>
+        ))}
+      </div>
+
+      {/* Map */}
+      <div style={{ flex: 1 }}>
         <MapContainer
           center={[27.7172, 85.324]}
-          zoom={13}
-          style={{
-            height: "100%",
-            width: "100%",
-          }}
+          zoom={14}
+          preferCanvas={true}
+          style={{ height: "100%", width: "100%" }}
         >
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution="&copy; OpenStreetMap contributors"
+            attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>'
           />
 
           <MapClickHandler onMapClick={handleMapClick} />
 
-          {exploredNodes.map((position, index) => (
-            <CircleMarker
-              key={index}
-              center={position}
-              radius={2.5}
-              pathOptions={{
-                color: COLORS.explored,
-                fillColor: COLORS.explored,
-                fillOpacity: 0.7,
-                weight: 0,
-              }}
-            />
-          ))}
-
-          {pathNodes.length > 1 && (
+          {/* All explored road edges drawn as one multi-polyline layer,
+              instead of thousands of separate React components. */}
+          {exploredSegments.length > 0 && (
             <Polyline
-              positions={pathNodes}
-              pathOptions={{
-                color: COLORS.path,
-                weight: 6,
-                opacity: 0.95,
-              }}
+              positions={exploredSegments}
+              pathOptions={{ color: COLORS.explored, weight: 2.5, opacity: 0.55 }}
+            />
+          )}
+
+          {pathSegments.length > 0 && (
+            <Polyline
+              positions={pathSegments}
+              pathOptions={{ color: COLORS.path, weight: 6, opacity: 0.95, lineCap: "round" }}
             />
           )}
 
@@ -371,12 +379,7 @@ function App() {
             <CircleMarker
               center={[startPoint.lat, startPoint.lng]}
               radius={9}
-              pathOptions={{
-                color: "#ffffff",
-                fillColor: COLORS.start,
-                fillOpacity: 1,
-                weight: 3,
-              }}
+              pathOptions={{ color: COLORS.start, fillColor: COLORS.start, fillOpacity: 1, weight: 2 }}
             />
           )}
 
@@ -384,45 +387,39 @@ function App() {
             <CircleMarker
               center={[endPoint.lat, endPoint.lng]}
               radius={9}
-              pathOptions={{
-                color: "#ffffff",
-                fillColor: COLORS.end,
-                fillOpacity: 1,
-                weight: 3,
-              }}
+              pathOptions={{ color: COLORS.end, fillColor: COLORS.end, fillOpacity: 1, weight: 2 }}
             />
           )}
         </MapContainer>
-      </main>
+      </div>
 
+      {/* Stats */}
       {stats && (
-        <footer
+        <div
           style={{
+            padding: "10px 20px",
+            background: "#1e293b",
+            color: "#f1f5f9",
             display: "flex",
-            justifyContent: "center",
-            gap: "40px",
-            padding: "11px",
-            background: "#111827",
-            color: "#d1d5db",
-            borderTop: "1px solid #374151",
-            fontSize: "13px",
+            gap: "30px",
+            fontSize: "0.9rem",
+            borderTop: "1px solid #334155",
           }}
         >
           <span>
-            Distance <strong>{stats.distance} km</strong>
+            Distance: <strong>{stats.distance_km} km</strong>
           </span>
-
           <span>
-            Explored <strong>{stats.explored}</strong> nodes
+            Nodes explored: <strong>{stats.nodes_explored}</strong>
           </span>
-
           <span>
-            Path <strong>{stats.path}</strong> nodes
+            Path nodes: <strong>{stats.path_length}</strong>
           </span>
-        </footer>
+          <span>
+            Algorithm time: <strong>{stats.execution_time_ms} ms</strong>
+          </span>
+        </div>
       )}
     </div>
   );
 }
-
-export default App;

@@ -1,12 +1,20 @@
+import time
+import math
+
+import osmnx as ox
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from map_loader import load_map
-from dijkstra import dijkstra
-import math
 
+from dijkstra import dijkstra
+from map_loader import load_map
 
 app = FastAPI(title="Dijkstra Maps API")
+
+CITY_NAME = "Kathmandu, Nepal"
+# A small allowance lets a click near the edge of the displayed city snap to
+# a road, while rejecting clearly unrelated map locations.
+BOUND_PADDING_DEGREES = 0.01
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,9 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Load the Kathmandu road network once when the server starts.
 print("Loading map data, please wait...")
-nodes, edges, G = load_map("Kathmandu, Nepal")
+nodes, graph, G = load_map(CITY_NAME)
 print("Map loaded successfully!")
+
+GRAPH_BOUNDS = {
+    "min_lat": min(n["lat"] for n in nodes.values()),
+    "max_lat": max(n["lat"] for n in nodes.values()),
+    "min_lon": min(n["lon"] for n in nodes.values()),
+    "max_lon": max(n["lon"] for n in nodes.values()),
+}
 
 
 class PathRequest(BaseModel):
@@ -27,100 +43,113 @@ class PathRequest(BaseModel):
     end_lon: float
 
 
-def find_nearest_node(lat, lon):
-    nearest = None
-    minimum_distance = float("inf")
-
-    for node_id, node in nodes.items():
-        dlat = node["lat"] - lat
-        dlon = node["lon"] - lon
-        distance = dlat * dlat + dlon * dlon
-
-        if distance < minimum_distance:
-            minimum_distance = distance
-            nearest = node_id
-
-    return nearest
-
-
 def node_to_coords(node_id):
-    node = nodes[node_id]
+    n = nodes[node_id]
+    return {"id": node_id, "lat": n["lat"], "lon": n["lon"]}
 
-    return {
-        "id": node_id,
-        "lat": node["lat"],
-        "lon": node["lon"]
-    }
+
+def find_nearest_node(lat, lon):
+    """Snap a clicked lat/lon to the nearest node in the road graph.
+
+    osmnx already builds a fast nearest-neighbor index (a KD-tree/BallTree
+    under the hood) for this instead of us looping over every node.
+    """
+    node_id = ox.distance.nearest_nodes(G, X=lon, Y=lat)
+    return str(node_id)
+
+
+def edge_lookup(u, v):
+    return graph.get(u, {}).get(v)
+
+
+def validate_coordinates(lat, lon, label):
+    """Reject invalid or clearly out-of-area map clicks before snapping."""
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        raise HTTPException(status_code=400, detail=f"{label} coordinates must be finite numbers")
+
+    if not (
+        GRAPH_BOUNDS["min_lat"] - BOUND_PADDING_DEGREES <= lat <= GRAPH_BOUNDS["max_lat"] + BOUND_PADDING_DEGREES
+        and GRAPH_BOUNDS["min_lon"] - BOUND_PADDING_DEGREES <= lon <= GRAPH_BOUNDS["max_lon"] + BOUND_PADDING_DEGREES
+    ):
+        raise HTTPException(status_code=400, detail=f"{label} must be within the Kathmandu road network")
 
 
 @app.get("/map")
 def get_map():
+    """Basic info about the loaded graph.
+
+    We don't ship the full ~tens-of-thousands-of-edges graph here: the base
+    map is already drawn by the OpenStreetMap tile layer in the frontend,
+    and the road edges that actually matter for the visualization (the ones
+    Dijkstra explores) are returned per-request by /find-path instead.
+    """
+    edge_count = sum(len(v) for v in graph.values())
     return {
-        "nodes": nodes,
-        "edges": edges
+        "place": CITY_NAME,
+        "node_count": len(nodes),
+        "edge_count": edge_count,
+        "bounds": GRAPH_BOUNDS,
     }
 
 
 @app.post("/find-path")
-def find_path(request: PathRequest):
-    source = find_nearest_node(
-        request.start_lat,
-        request.start_lon
-    )
+def find_path(req: PathRequest):
+    """Run our own Dijkstra from the start click to the end click and
+    return both the exploration events and the final shortest route."""
+    validate_coordinates(req.start_lat, req.start_lon, "Start")
+    validate_coordinates(req.end_lat, req.end_lon, "Destination")
 
-    target = find_nearest_node(
-        request.end_lat,
-        request.end_lon
-    )
-
-    if source is None or target is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not find nearby nodes"
-        )
+    try:
+        source = find_nearest_node(req.start_lat, req.start_lon)
+        target = find_nearest_node(req.end_lat, req.end_lon)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not find nearby road nodes")
 
     if source == target:
         raise HTTPException(
             status_code=400,
-            detail="Start and end are too close"
+            detail="Start and destination snapped to the same road point. Try points farther apart.",
         )
 
-    explored, path, distance = dijkstra(
-        edges,
-        source,
-        target
-    )
+    start_time = time.perf_counter()
+    explored_nodes, explored_edges, path, distance = dijkstra(graph, source, target)
+    execution_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     if not path:
-        raise HTTPException(
-            status_code=404,
-            detail="No route found"
-        )
+        raise HTTPException(status_code=404, detail="No path found between these points")
+
+    explored_edges_out = [
+        {
+            "from": e["from"],
+            "to": e["to"],
+            "geometry": edge_lookup(e["from"], e["to"])["geometry"],
+        }
+        for e in explored_edges
+    ]
+
+    path_edges = [
+        {
+            "from": u,
+            "to": v,
+            "geometry": edge_lookup(u, v)["geometry"],
+        }
+        for u, v in zip(path, path[1:])
+    ]
 
     return {
         "source": node_to_coords(source),
         "target": node_to_coords(target),
-        "explored": [
-            node_to_coords(node)
-            for node in explored
-        ],
-        "path": [
-            node_to_coords(node)
-            for node in path
-        ],
+        "explored_edges": explored_edges_out,
+        "path": [node_to_coords(n) for n in path],
+        "path_edges": path_edges,
         "distance_meters": round(distance, 2),
         "distance_km": round(distance / 1000, 3),
-        "nodes_explored": len(explored)
+        "nodes_explored": len(explored_nodes),
+        "execution_time_ms": execution_time_ms,
     }
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "nodes": len(nodes),
-        "edges": sum(
-            len(neighbors)
-            for neighbors in edges.values()
-        )
-    }
+    edge_count = sum(len(v) for v in graph.values())
+    return {"status": "ok", "nodes": len(nodes), "edges": edge_count}
