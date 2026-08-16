@@ -10,7 +10,6 @@ const EXPLORE_TICKS = 220;
 const PATH_TICKS = 60;
 const EXPLORE_DELAY_MS = 75;
 const PATH_DELAY_MS = 32;
-const MAX_EXPLORED_SEGMENTS = 7000;
 
 function createPinIcon(type, label) {
   return L.divIcon({
@@ -86,7 +85,7 @@ export default function App() {
       if (runId !== runIdRef.current) return;
       const next = edges.slice(i, i + chunkSize);
       for (const edge of next) {
-        if (revealed.length < MAX_EXPLORED_SEGMENTS && edge.geometry && edge.geometry.length > 1) revealed.push(edge.geometry);
+        if (edge.geometry && edge.geometry.length > 1) revealed.push(edge.geometry);
       }
       i += chunkSize;
       setExploredSegments([...revealed]);
@@ -124,7 +123,6 @@ export default function App() {
     setPathSegments([]);
     setRoutePath([]);
     setStats(null);
-    const requestStart = performance.now();
     setStatus("Preparing Dijkstra exploration...");
     let data;
     try {
@@ -152,7 +150,6 @@ export default function App() {
     setStartPoint({ lat: data.source.lat, lng: data.source.lon });
     setEndPoint({ lat: data.target.lat, lng: data.target.lon });
     setRoutePath(data.path);
-    const browserRequestMs = performance.now() - requestStart;
     setStatus("Dijkstra is exploring the road network...");
     animateExploration(data.explored_edges, () => {
       setStatus("Destination reached. Displaying shortest route...");
@@ -161,7 +158,7 @@ export default function App() {
       timerRef.current = setTimeout(() => {
         if (runId !== runIdRef.current) return;
         animatePath(data.path_edges, () => {
-          setStats({ ...data, browser_request_ms: browserRequestMs, total_visible_ms: performance.now() - requestStart });
+          setStats(data);
           setStatus("Shortest route found.");
           setIsAnimatingPath(false);
         }, runId);
@@ -182,7 +179,7 @@ export default function App() {
       <header className="project-header">
         <div className="title-block">
           <p className="eyebrow">DSA Project</p>
-          <h1>Implementation of Dijkstra for Route Visualization for Kathmandu</h1>
+          <h1>Implementation of Dijkstra for Route Visualization for Kathmandu Valley</h1>
           <div className="student-credits">
             <span>BCT Students</span>
             <p>Dhiraj Shrestha — 081BCT031</p>
@@ -194,11 +191,11 @@ export default function App() {
 
       <main className="map-area">
         <div className="map-heading">
-          <div><p className="section-label">Kathmandu road network</p><h2>Select two points on the map</h2></div>
+          <div><p className="section-label">Kathmandu Valley driving road network</p><h2>Select two points across Kathmandu, Lalitpur, or Bhaktapur</h2></div>
           <p className="map-source">OpenStreetMap road data</p>
         </div>
         <div className="map-frame">
-          <MapContainer center={[27.7172, 85.324]} zoom={14} preferCanvas={true} style={{ height: "100%", width: "100%" }}>
+          <MapContainer center={[27.679, 85.367]} zoom={12} preferCanvas={true} style={{ height: "100%", width: "100%" }}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>' />
             <MapClickHandler onMapClick={handleMapClick} />
             <MapRouteFitter path={routePath} />

@@ -1,9 +1,47 @@
+from pathlib import Path
+
 import osmnx as ox
+from shapely.ops import unary_union
 
 
-def load_map(place="Kathmandu, Nepal", network_type="drive"):
+VALLEY_AREAS = ("Kathmandu, Nepal", "Lalitpur, Nepal", "Bhaktapur, Nepal")
+NETWORK_TYPE = "drive"
+CACHE_DIR = Path(__file__).resolve().parent / "data"
+GRAPH_CACHE = CACHE_DIR / "kathmandu_valley_drive.graphml"
+
+
+def _configure_osmnx_cache():
+    """Keep both OSM responses and the finished graph beside the backend."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ox.settings.use_cache = True
+    ox.settings.cache_folder = str(CACHE_DIR / "osmnx_http_cache")
+
+
+def load_kathmandu_valley_map():
+    """Load the cached Kathmandu Valley driving network, downloading it once.
+
+    The three administrative areas are geocoded individually and their
+    boundaries are merged before a single OSM street query is made. Querying
+    one merged polygon, rather than three separate graphs, preserves roads
+    that cross municipal boundaries and gives Dijkstra one connected network.
     """
-    Load the real road network for `place` from OpenStreetMap via osmnx,
+    _configure_osmnx_cache()
+    if GRAPH_CACHE.exists():
+        print(f"Loading cached Kathmandu Valley graph: {GRAPH_CACHE}")
+        G = ox.load_graphml(GRAPH_CACHE)
+    else:
+        print("Downloading driving roads for Kathmandu, Lalitpur, and Bhaktapur from OpenStreetMap...")
+        area_boundaries = ox.geocode_to_gdf(list(VALLEY_AREAS))
+        valley_polygon = unary_union(area_boundaries.geometry.tolist())
+        G = ox.graph_from_polygon(valley_polygon, network_type=NETWORK_TYPE)
+        ox.save_graphml(G, GRAPH_CACHE)
+        print(f"Saved Kathmandu Valley graph cache: {GRAPH_CACHE}")
+    return _convert_graph(G)
+
+
+def _convert_graph(G):
+    """
+    Convert the real Kathmandu Valley road network from OSMnx,
     and convert it into the plain dict structures the rest of the backend
     (and our own Dijkstra implementation) work with.
 
@@ -14,9 +52,6 @@ def load_map(place="Kathmandu, Nepal", network_type="drive"):
         G: the raw osmnx MultiDiGraph, kept around only so we can use
            osmnx's own nearest-node search later.
     """
-    print(f"Loading map for: {place}")
-    G = ox.graph_from_place(place, network_type=network_type)
-
     nodes = {}
     for node_id, data in G.nodes(data=True):
         nodes[str(node_id)] = {

@@ -1,5 +1,5 @@
-import time
 import math
+import time
 
 import osmnx as ox
 from fastapi import FastAPI, HTTPException
@@ -7,12 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from dijkstra import dijkstra
-from map_loader import load_map
+from map_loader import NETWORK_TYPE, VALLEY_AREAS, load_kathmandu_valley_map
 
 app = FastAPI(title="Dijkstra Maps API")
 
-CITY_NAME = "Kathmandu, Nepal"
-# A small allowance lets a click near the edge of the displayed city snap to
+PLACE_NAME = "Kathmandu Valley, Nepal"
+# A small allowance lets a click near the edge of the displayed valley snap to
 # a road, while rejecting clearly unrelated map locations.
 BOUND_PADDING_DEGREES = 0.01
 
@@ -23,9 +23,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the Kathmandu road network once when the server starts.
+# Load the cached Kathmandu Valley road network once when the server starts.
 print("Loading map data, please wait...")
-nodes, graph, G = load_map(CITY_NAME)
+nodes, graph, G = load_kathmandu_valley_map()
 print("Map loaded successfully!")
 
 GRAPH_BOUNDS = {
@@ -81,7 +81,7 @@ def validate_coordinates(lat, lon, label):
         GRAPH_BOUNDS["min_lat"] - BOUND_PADDING_DEGREES <= lat <= GRAPH_BOUNDS["max_lat"] + BOUND_PADDING_DEGREES
         and GRAPH_BOUNDS["min_lon"] - BOUND_PADDING_DEGREES <= lon <= GRAPH_BOUNDS["max_lon"] + BOUND_PADDING_DEGREES
     ):
-        raise HTTPException(status_code=400, detail=f"{label} must be within the Kathmandu road network")
+        raise HTTPException(status_code=400, detail=f"{label} must be within the Kathmandu Valley road network")
 
 
 @app.get("/map")
@@ -95,7 +95,9 @@ def get_map():
     """
     edge_count = sum(len(v) for v in graph.values())
     return {
-        "place": CITY_NAME,
+        "place": PLACE_NAME,
+        "areas": VALLEY_AREAS,
+        "network_type": NETWORK_TYPE,
         "node_count": len(nodes),
         "edge_count": edge_count,
         "bounds": GRAPH_BOUNDS,
@@ -109,7 +111,6 @@ def find_path(req: PathRequest):
     validate_coordinates(req.start_lat, req.start_lon, "Start")
     validate_coordinates(req.end_lat, req.end_lon, "Destination")
 
-    request_start_time = time.perf_counter()
     try:
         source = find_nearest_node(req.start_lat, req.start_lon)
         target = find_nearest_node(req.end_lat, req.end_lon)
@@ -167,7 +168,6 @@ def find_path(req: PathRequest):
         },
         "algorithm_time_ms": algorithm_time_ms,
     }
-    response["backend_processing_ms"] = round((time.perf_counter() - request_start_time) * 1000, 2)
     return response
 
 
