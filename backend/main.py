@@ -12,8 +12,6 @@ from map_loader import NETWORK_TYPE, VALLEY_AREAS, load_kathmandu_valley_map
 app = FastAPI(title="Dijkstra Maps API")
 
 PLACE_NAME = "Kathmandu Valley, Nepal"
-# A small allowance lets a click near the edge of the displayed valley snap to
-# a road, while rejecting clearly unrelated map locations.
 BOUND_PADDING_DEGREES = 0.01
 
 app.add_middleware(
@@ -23,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the cached Kathmandu Valley road network once when the server starts.
 print("Loading map data, please wait...")
 nodes, graph, G = load_kathmandu_valley_map()
 print("Map loaded successfully!")
@@ -49,11 +46,6 @@ def node_to_coords(node_id):
 
 
 def find_nearest_node(lat, lon):
-    """Snap a clicked lat/lon to the nearest node in the road graph.
-
-    osmnx already builds a fast nearest-neighbor index (a KD-tree/BallTree
-    under the hood) for this instead of us looping over every node.
-    """
     node_id = ox.distance.nearest_nodes(G, X=lon, Y=lat)
     return str(node_id)
 
@@ -63,7 +55,6 @@ def edge_lookup(u, v):
 
 
 def haversine_distance_meters(lat1, lon1, lat2, lon2):
-    """Return the straight-line distance between two latitude/longitude points."""
     radius_m = 6_371_000
     lat1, lon1, lat2, lon2 = map(math.radians, (lat1, lon1, lat2, lon2))
     d_lat = lat2 - lat1
@@ -73,7 +64,6 @@ def haversine_distance_meters(lat1, lon1, lat2, lon2):
 
 
 def validate_coordinates(lat, lon, label):
-    """Reject invalid or clearly out-of-area map clicks before snapping."""
     if not math.isfinite(lat) or not math.isfinite(lon):
         raise HTTPException(status_code=400, detail=f"{label} coordinates must be finite numbers")
 
@@ -86,13 +76,6 @@ def validate_coordinates(lat, lon, label):
 
 @app.get("/map")
 def get_map():
-    """Basic info about the loaded graph.
-
-    We don't ship the full ~tens-of-thousands-of-edges graph here: the base
-    map is already drawn by the OpenStreetMap tile layer in the frontend,
-    and the road edges that actually matter for the visualization (the ones
-    Dijkstra explores) are returned per-request by /find-path instead.
-    """
     edge_count = sum(len(v) for v in graph.values())
     return {
         "place": PLACE_NAME,
@@ -106,8 +89,6 @@ def get_map():
 
 @app.post("/find-path")
 def find_path(req: PathRequest):
-    """Run our own Dijkstra from the start click to the end click and
-    return both the exploration events and the final shortest route."""
     validate_coordinates(req.start_lat, req.start_lon, "Start")
     validate_coordinates(req.end_lat, req.end_lon, "Destination")
 
