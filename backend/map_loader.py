@@ -48,8 +48,6 @@ def _convert_graph(G):
 
         graph.setdefault(u_str, {})
 
-        # A MultiDiGraph can have more than one edge between the same pair
-        # of nodes (e.g. a divided road). Keep the shortest one.
         existing = graph[u_str].get(v_str)
         if existing is None or length < existing["weight"]:
             graph[u_str][v_str] = {"weight": length, "geometry": geometry}
